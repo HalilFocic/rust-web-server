@@ -25,10 +25,13 @@ fn handle_connection(mut stream: TcpStream) {
     let split_first_line = first_line.split_whitespace().collect::<Vec<&str>>();
     match split_first_line[0] {
         "GET" => return handle_get_request(stream, first_line),
-        "POST" => return handle_post_request(stream, split_first_line),
+        "POST" => {
+            let request = read_post_body(&mut buf_reader);
+            return handle_post_request(stream, split_first_line);
+        }
         "PATCH" => return handle_patch_request(stream, split_first_line),
         "DELETE" => return handle_delete_request(stream, split_first_line),
-        _ => return handle_unsupported_request(stream, first_line),
+        _ => return handle_unsupported_request(stream),
     }
 }
 fn handle_get_request(mut stream: TcpStream, first_line: String) {
@@ -51,13 +54,12 @@ fn handle_get_request(mut stream: TcpStream, first_line: String) {
     }
 }
 fn handle_post_request(mut stream: TcpStream, first_line: Vec<&str>) {
-    let path = format!("./public{}.txt", first_line[1]);
+    let path = format!("./public{}", first_line[1]);
     let mut resource: File;
 
     if let Ok(file) = OpenOptions::new().append(true).open(&path) {
         resource = file;
     } else {
-        println!("File not found");
         resource = File::create(&path).unwrap();
     }
     resource.write_all("Appendam 123\n".as_bytes()).unwrap();
@@ -108,7 +110,7 @@ fn handle_delete_request(mut stream: TcpStream, first_line: Vec<&str>) {
         return stream.write_all(content.as_bytes()).unwrap();
     }
 }
-fn handle_unsupported_request(mut stream: TcpStream, first_line: String) {
+fn handle_unsupported_request(mut stream: TcpStream) {
     let save_successful = "Unsupported request";
     let content = format!(
         "HTTP/1.1 200 OK\r\nContent-Length:{}\r\n\r\n{}",
@@ -119,7 +121,28 @@ fn handle_unsupported_request(mut stream: TcpStream, first_line: String) {
 }
 
 fn read_from_rile(file_name: &str) -> Result<String, std::io::Error> {
-    let file_name = format!("./public/{}.txt", file_name);
+    let file_name = format!("./public/{}", file_name);
     println!("file_name: {}", file_name);
     fs::read_to_string(file_name)
+}
+
+fn read_post_body(buf_reader: &mut BufReader<&mut TcpStream>) -> String {
+    let mut boundary = String::new();
+    // read while you get to Content-Type line
+    while boundary.is_empty() {
+        let mut line = String::new();
+        buf_reader.read_line(&mut line).unwrap();
+        if line.starts_with("Content-Type:") && line.contains("boundary") {
+            boundary = line.split("boundary=").collect::<Vec<&str>>()[1].to_string();
+        }
+    }
+    loop {
+        let mut line = String::new();
+        buf_reader.read_line(&mut line).unwrap();
+        if line == format!("--{}--\r\n", &boundary.trim()) {
+            break;
+        }
+   }
+
+    String::from("Hello")
 }
