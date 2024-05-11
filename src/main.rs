@@ -1,4 +1,5 @@
 use rust_web_server::ThreadPool;
+use serde::Deserialize;
 use std::fs::OpenOptions;
 use std::{
     fs::{self, File},
@@ -25,11 +26,16 @@ fn handle_connection(mut stream: TcpStream) {
     let split_first_line = first_line.split_whitespace().collect::<Vec<&str>>();
     match split_first_line[0] {
         "GET" => return handle_get_request(stream, first_line),
-        "POST" => {
-            let request = read_post_body(&mut buf_reader);
-            return handle_post_request(stream, split_first_line);
-        }
-        "PATCH" => return handle_patch_request(stream, split_first_line),
+        "POST" => match read_body_from_request(&mut buf_reader) {
+            Ok(text_content) => return handle_post_request(stream, split_first_line, text_content),
+            Err(_) => return handle_unsupported_request(stream),
+        },
+        "PATCH" => match read_body_from_request(&mut buf_reader) {
+            Ok(text_content) => {
+                return handle_patch_request(stream, split_first_line, text_content)
+            }
+            Err(_) => return handle_unsupported_request(stream),
+        },
         "DELETE" => return handle_delete_request(stream, split_first_line),
         _ => return handle_unsupported_request(stream),
     }
@@ -53,7 +59,7 @@ fn handle_get_request(mut stream: TcpStream, first_line: String) {
         }
     }
 }
-fn handle_post_request(mut stream: TcpStream, first_line: Vec<&str>) {
+fn handle_post_request(mut stream: TcpStream, first_line: Vec<&str>, text_content: String) {
     let path = format!("./public{}", first_line[1]);
     let mut resource: File;
 
@@ -62,26 +68,26 @@ fn handle_post_request(mut stream: TcpStream, first_line: Vec<&str>) {
     } else {
         resource = File::create(&path).unwrap();
     }
-    resource.write_all("Appendam 123\n".as_bytes()).unwrap();
+    // write the string text_content to file
+    resource.write_all(text_content.as_bytes()).unwrap();
     let save_successful = "Save was sucessfull";
     let content = format!(
         "HTTP/1.1 200 OK\r\nContent-Length:{}\r\n\r\n{}",
         save_successful.len(),
         save_successful
     );
-    return stream.write_all(content.as_bytes()).unwrap();
+    return stream.write_all(&content.as_bytes()).unwrap();
 }
-fn handle_patch_request(mut stream: TcpStream, first_line: Vec<&str>) {
-    let path = format!("./public{}.txt", first_line[1]);
+fn handle_patch_request(mut stream: TcpStream, first_line: Vec<&str>, text_content: String) {
+    let path = format!("./public{}", first_line[1]);
     let mut resource: File;
 
     if let Ok(file) = OpenOptions::new().write(true).truncate(true).open(&path) {
         resource = file;
     } else {
-        println!("File not found");
         resource = File::create(&path).unwrap();
     }
-    resource.write_all("Patch 123\n".as_bytes()).unwrap();
+    resource.write_all(text_content.as_bytes()).unwrap();
     let save_successful = "Patch was sucessfull";
     let content = format!(
         "HTTP/1.1 200 OK\r\nContent-Length:{}\r\n\r\n{}",
@@ -125,24 +131,30 @@ fn read_from_rile(file_name: &str) -> Result<String, std::io::Error> {
     println!("file_name: {}", file_name);
     fs::read_to_string(file_name)
 }
+#[derive(Deserialize, Debug)]
+struct RequestBody {
+    content: String,
+}
+fn read_body_from_request(
+    buf_reader: &mut BufReader<&mut TcpStream>,
+) -> Result<String, serde_json::Error> {
+    let mut content_length: usize = 0;
 
-fn read_post_body(buf_reader: &mut BufReader<&mut TcpStream>) -> String {
-    let mut boundary = String::new();
-    // read while you get to Content-Type line
-    while boundary.is_empty() {
-        let mut line = String::new();
-        buf_reader.read_line(&mut line).unwrap();
-        if line.starts_with("Content-Type:") && line.contains("boundary") {
-            boundary = line.split("boundary=").collect::<Vec<&str>>()[1].to_string();
-        }
-    }
     loop {
-        let mut line = String::new();
-        buf_reader.read_line(&mut line).unwrap();
-        if line == format!("--{}--\r\n", &boundary.trim()) {
+        let line = buf_reader.lines().next().unwrap().unwrap();
+        if line.starts_with("Content-Length:") {
+            let split_line = line.split(":").collect::<Vec<&str>>();
+            content_length = split_line[1].trim().parse::<usize>().unwrap();
+        }
+        if line.trim().is_empty() {
             break;
         }
-   }
-
-    String::from("Hello")
+    }
+    let mut body = vec![0; content_length];
+    buf_reader.read_exact(&mut body).unwrap();
+    // convert the body to string
+    let body = String::from_utf8(body).unwrap();
+    // parse the body to a struct or return empty string if there is an error
+    let body: RequestBody = serde_json::from_str(&body)?;
+    return Ok(body.content);
 }
